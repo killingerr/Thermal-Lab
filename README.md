@@ -6,12 +6,11 @@ It does not reimplement stressing. The engine is a local checkout of stress-scri
 
 ## What it does
 
-1. Name a **configuration** (CPU / GPU / PSU / RAM / storage / fans / chassis, room and ambient temp).
-2. Confirm acoustic mic placement (2 ft from the CPU side, center height and width, quiet space) and record **idle dB**.
-3. **Warm-up** 5–10 minutes with `s76-stress-tests.sh -l` (skip LLVM).
-4. **Shut off / 3 minute cooldown**, then a 10-minute thermal run, then capture CPU and GPU tap from the test_gui tabs (optional photos). Repeat 2–3 times.
-5. Record **stressed dB** during one of the thermal runs.
-6. **Compare** two or more saved configurations (per-run and average taps, idle/stressed dB, deltas vs the first selected). Ambient mismatch is flagged.
+1. On launch, scan this machine (CPU, GPU, RAM, storage, fans, chassis) and prefill a **configuration**. CPU cooler is entered by hand. PSU and serial are filled only when the system exposes them.
+2. Start either a **thermal** session or an **acoustic** session. They are separate passes on the same kind of configuration.
+3. Thermal: **warm-up** 5–10 minutes with `s76-stress-tests.sh -l` (skip LLVM), then a 3-minute cooldown and a 10-minute run. Capture CPU and GPU tap from the test_gui tabs (optional photos). Repeat 2–3 times.
+4. Acoustic: confirm mic placement (2 ft from the CPU side, center height and width, quiet space), record **idle dB**, then start the suite and record **stressed dB**.
+5. **Compare** two or more sessions of the same type. Thermal compare shows taps. Acoustic compare shows idle and stressed dB. Ambient mismatch is flagged.
 
 Sessions are saved under `~/.local/share/thermal-lab/` so you can resume after a reboot.
 

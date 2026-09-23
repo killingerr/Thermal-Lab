@@ -22,6 +22,7 @@ class Configuration:
     sku: str = ""
     serial: str = ""
     cpu: str = ""
+    cpu_cooler: str = ""
     gpu: str = ""
     psu: str = ""
     ram: str = ""
@@ -43,7 +44,7 @@ class Configuration:
         return ""
 
     def parts_label(self) -> str:
-        bits = [p for p in (self.cpu, self.gpu, self.psu, self.ram, self.storage, self.fans_label()) if p]
+        bits = [p for p in (self.cpu, self.cpu_cooler, self.gpu, self.psu, self.ram, self.storage, self.fans_label()) if p]
         return " / ".join(bits) if bits else "—"
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,9 +102,10 @@ class Session:
     created_at: str
     updated_at: str
     configuration: Configuration
+    kind: str = "thermal"
     run_count: int = 2
     warmup_minutes: int = 7
-    current_step_id: str = "acoustic_setup"
+    current_step_id: str = "warmup"
     completed_step_ids: list[str] = field(default_factory=list)
     acoustic: Acoustic = field(default_factory=Acoustic)
     runs: list[ThermalRun] = field(default_factory=list)
@@ -115,18 +117,29 @@ class Session:
         configuration: Configuration,
         run_count: int = 2,
         warmup_minutes: int = 7,
+        kind: str = "thermal",
     ) -> Session:
         now = utc_now()
-        run_count = 3 if run_count >= 3 else 2
+        kind = "acoustic" if kind == "acoustic" else "thermal"
         warmup_minutes = min(10, max(5, int(warmup_minutes)))
+        if kind == "acoustic":
+            run_count = 0
+            runs: list[ThermalRun] = []
+            current_step_id = "acoustic_setup"
+        else:
+            run_count = 3 if run_count >= 3 else 2
+            runs = [ThermalRun(index=i) for i in range(1, run_count + 1)]
+            current_step_id = "warmup"
         return cls(
             id=uuid.uuid4().hex[:12],
             created_at=now,
             updated_at=now,
             configuration=configuration,
+            kind=kind,
             run_count=run_count,
             warmup_minutes=warmup_minutes,
-            runs=[ThermalRun(index=i) for i in range(1, run_count + 1)],
+            current_step_id=current_step_id,
+            runs=runs,
         )
 
     def run(self, index: int) -> ThermalRun:
@@ -144,6 +157,7 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "configuration": self.configuration.to_dict(),
+            "kind": self.kind,
             "run_count": self.run_count,
             "warmup_minutes": self.warmup_minutes,
             "current_step_id": self.current_step_id,
@@ -155,18 +169,28 @@ class Session:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Session:
+        kind = data.get("kind") or "thermal"
+        if kind not in ("thermal", "acoustic"):
+            kind = "thermal"
         runs = [ThermalRun.from_dict(item) for item in data.get("runs") or []]
-        run_count = int(data.get("run_count") or len(runs) or 2)
-        if not runs:
-            runs = [ThermalRun(index=i) for i in range(1, run_count + 1)]
+        if kind == "acoustic":
+            run_count = 0
+            runs = []
+            default_step = "acoustic_setup"
+        else:
+            run_count = int(data.get("run_count") or len(runs) or 2)
+            if not runs:
+                runs = [ThermalRun(index=i) for i in range(1, run_count + 1)]
+            default_step = "warmup"
         return cls(
             id=data["id"],
             created_at=data.get("created_at") or utc_now(),
             updated_at=data.get("updated_at") or utc_now(),
             configuration=Configuration.from_dict(data.get("configuration") or {}),
+            kind=kind,
             run_count=run_count,
             warmup_minutes=int(data.get("warmup_minutes") or 7),
-            current_step_id=data.get("current_step_id") or "acoustic_setup",
+            current_step_id=data.get("current_step_id") or default_step,
             completed_step_ids=list(data.get("completed_step_ids") or []),
             acoustic=Acoustic.from_dict(data.get("acoustic") or {}),
             runs=runs,

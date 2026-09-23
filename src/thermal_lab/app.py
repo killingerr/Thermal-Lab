@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox
 from thermal_lab.compare import CompareResult, compare_sessions
 from thermal_lab.models import Configuration, Session, utc_now
 from thermal_lab.protocol import Step, build_steps, next_step, step_index
+from thermal_lab.scan import scan_hardware
 from thermal_lab.store import Store
 from thermal_lab.suite import SuiteError, SuiteRunner, suite_script_path
 
@@ -33,6 +34,14 @@ def fmt_num(value: Optional[float], unit: str = "") -> str:
         return "—"
     suffix = f" {unit}" if unit else ""
     return f"{value:g}{suffix}"
+
+
+def _num_text(value: Optional[float]) -> str:
+    if value is None:
+        return ""
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def fmt_delta(delta: Optional[float], unit: str) -> str:
@@ -71,6 +80,7 @@ class ThermalLabApp(ctk.CTk):
         self._remaining = 0
         self._timer_running = False
         self._compare_vars: dict[str, ctk.BooleanVar] = {}
+        self.hardware = scan_hardware()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_shell()
@@ -98,7 +108,8 @@ class ThermalLabApp(ctk.CTk):
 
         for label, command in (
             ("Home", self.show_home),
-            ("New session", self.show_setup),
+            ("Thermal session", lambda: self.show_setup("Thermal")),
+            ("Acoustic session", lambda: self.show_setup("Acoustic")),
             ("Resume", self._resume_last),
             ("History", self.show_history),
             ("Compare", self.show_compare),
@@ -168,7 +179,20 @@ class ThermalLabApp(ctk.CTk):
 
         actions = ctk.CTkFrame(page, fg_color="transparent")
         actions.pack(fill="x", pady=(0, 18))
-        ctk.CTkButton(actions, text="New session", width=160, fg_color=ACCENT, hover_color="#a34b1e", command=self.show_setup).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions,
+            text="Thermal session",
+            width=160,
+            fg_color=ACCENT,
+            hover_color="#a34b1e",
+            command=lambda: self.show_setup("Thermal"),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions,
+            text="Acoustic session",
+            width=170,
+            command=lambda: self.show_setup("Acoustic"),
+        ).pack(side="left", padx=(0, 8))
         resume = self.store.latest_in_progress()
         if resume:
             ctk.CTkButton(
@@ -198,7 +222,44 @@ class ThermalLabApp(ctk.CTk):
             self.path_entry.insert(0, self.settings.stress_scripts_path)
         ctk.CTkButton(row, text="Browse", width=90, command=self._browse_suite).pack(side="left", padx=(0, 8))
         ctk.CTkButton(row, text="Save path", width=100, command=self._save_suite_path).pack(side="left")
+        self._hardware_panel(page)
         self._refresh_suite_status()
+
+    def _hardware_panel(self, page) -> None:
+        box = ctk.CTkFrame(page)
+        box.pack(fill="both", expand=True, pady=(16, 0))
+        header = ctk.CTkFrame(box, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 4))
+        ctk.CTkLabel(header, text="Detected hardware", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        ctk.CTkButton(header, text="Rescan", width=90, command=self._rescan_hardware).pack(side="right")
+        ctk.CTkLabel(
+            box,
+            text="Scanned when Thermal Lab starts. New sessions are prefilled from this machine.",
+            text_color=MUTED,
+            wraplength=800,
+            justify="left",
+        ).pack(anchor="w", padx=16)
+
+        grid = ctk.CTkFrame(box, fg_color="transparent")
+        grid.pack(fill="x", padx=16, pady=(8, 8))
+        grid.grid_columnconfigure(1, weight=1)
+        for row, (label, value) in enumerate(self.hardware.rows()):
+            ctk.CTkLabel(grid, text=label, text_color=MUTED, width=120, anchor="w").grid(row=row, column=0, sticky="w", pady=2)
+            ctk.CTkLabel(grid, text=value, anchor="w", wraplength=720, justify="left").grid(row=row, column=1, sticky="w", pady=2)
+        if self.hardware.notes:
+            ctk.CTkLabel(
+                box,
+                text=" ".join(self.hardware.notes),
+                text_color=MUTED,
+                wraplength=800,
+                justify="left",
+            ).pack(anchor="w", padx=16, pady=(0, 14))
+        else:
+            ctk.CTkLabel(box, text="").pack(pady=6)
+
+    def _rescan_hardware(self) -> None:
+        self.hardware = scan_hardware()
+        self.show_home()
 
     def _browse_suite(self) -> None:
         chosen = filedialog.askdirectory(title="Select stress-scripts checkout")
@@ -225,10 +286,40 @@ class ThermalLabApp(ctk.CTk):
 
     # --- Setup -----------------------------------------------------------
 
-    def show_setup(self) -> None:
+    def show_setup(self, kind: str = "Thermal") -> None:
         self._stop_timer()
+        if kind not in ("Thermal", "Acoustic"):
+            kind = "Thermal"
         page = self._page()
-        self._heading(page, "New session", "Name the hardware configuration you will compare later.")
+        self._heading(
+            page,
+            "New session",
+            "Choose thermal or acoustic. Reuse a saved configuration, or start from this machine.",
+        )
+
+        self.session_kind = ctk.CTkSegmentedButton(
+            page,
+            values=["Thermal", "Acoustic"],
+            command=self._on_session_kind_change,
+            width=280,
+        )
+        self.session_kind.set(kind)
+        self.session_kind.pack(anchor="w", pady=(0, 12))
+
+        self._reuse_choices = self._saved_config_choices()
+        if len(self._reuse_choices) > 1:
+            reuse_row = ctk.CTkFrame(page, fg_color="transparent")
+            reuse_row.pack(anchor="w", fill="x", pady=(0, 12))
+            ctk.CTkLabel(reuse_row, text="Saved configuration").pack(side="left", padx=(0, 8))
+            self.reuse_menu = ctk.CTkOptionMenu(
+                reuse_row,
+                values=list(self._reuse_choices),
+                command=self._on_reuse_config,
+                width=520,
+                dynamic_resizing=False,
+            )
+            self.reuse_menu.set("This machine")
+            self.reuse_menu.pack(side="left")
 
         form = ctk.CTkScrollableFrame(page)
         form.pack(fill="both", expand=True)
@@ -245,38 +336,46 @@ class ThermalLabApp(ctk.CTk):
                 entry.insert(0, value)
             self._fields[key] = entry
 
+        hw = self.hardware
         add(0, 0, "name", "Configuration name")
         add(0, 1, "operator", "Operator", self.settings.last_operator)
-        add(2, 0, "sku", "Chassis / SKU")
-        add(2, 1, "serial", "Serial")
-        add(4, 0, "cpu", "CPU")
-        add(4, 1, "gpu", "GPU")
-        add(6, 0, "psu", "PSU")
-        add(6, 1, "ram", "RAM")
-        add(8, 0, "storage", "Storage")
-        add(8, 1, "notes", "Notes")
+        add(2, 0, "sku", "Chassis / SKU", hw.sku)
+        add(2, 1, "serial", "Serial", hw.serial)
+        add(4, 0, "cpu", "CPU", hw.cpu)
+        add(4, 1, "cpu_cooler", "CPU cooler")
+        add(6, 0, "gpu", "GPU", hw.gpu)
+        add(6, 1, "psu", "PSU", hw.psu)
+        add(8, 0, "ram", "RAM", hw.ram)
+        add(8, 1, "storage", "Storage", hw.storage)
+        add(10, 0, "notes", "Notes")
 
-        ctk.CTkLabel(form, text="Fans (type)").grid(row=10, column=0, sticky="w", padx=8, pady=(10, 2))
-        ctk.CTkLabel(form, text="How many fans").grid(row=10, column=1, sticky="w", padx=8, pady=(10, 2))
+        ctk.CTkLabel(form, text="Fans (type)").grid(row=12, column=0, sticky="w", padx=8, pady=(10, 2))
+        ctk.CTkLabel(form, text="How many fans").grid(row=12, column=1, sticky="w", padx=8, pady=(10, 2))
         fan_type = ctk.CTkEntry(form, placeholder_text="e.g. Noctua NF-A14, stock chassis")
-        fan_type.grid(row=11, column=0, sticky="ew", padx=8, pady=(0, 6))
+        fan_type.grid(row=13, column=0, sticky="ew", padx=8, pady=(0, 6))
+        if hw.fan_type:
+            fan_type.insert(0, hw.fan_type)
         self._fields["fan_type"] = fan_type
         self.fan_count_menu = ctk.CTkOptionMenu(form, values=FAN_COUNT_CHOICES, width=90)
-        self.fan_count_menu.set("—")
-        self.fan_count_menu.grid(row=11, column=1, sticky="w", padx=8, pady=(0, 6))
+        if hw.fan_count and 1 <= hw.fan_count <= 12:
+            self.fan_count_menu.set(str(hw.fan_count))
+        else:
+            self.fan_count_menu.set("—")
+        self.fan_count_menu.grid(row=13, column=1, sticky="w", padx=8, pady=(0, 6))
 
-        add(12, 0, "room", "Room temp °C")
-        add(12, 1, "ambient", "Ambient temp °C")
+        add(14, 0, "room", "Room temp °C")
+        add(14, 1, "ambient", "Ambient temp °C")
 
         self.swapped_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             form,
             text="Parts were swapped — this is a new combo that needs a full re-test",
             variable=self.swapped_var,
-        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=8, pady=12)
+        ).grid(row=16, column=0, columnspan=2, sticky="w", padx=8, pady=12)
 
         opts = ctk.CTkFrame(form, fg_color="transparent")
-        opts.grid(row=15, column=0, columnspan=2, sticky="w", padx=8, pady=8)
+        opts.grid(row=18, column=0, columnspan=2, sticky="w", padx=8, pady=8)
+        self.thermal_opts = opts
         ctk.CTkLabel(opts, text="Thermal runs").pack(side="left", padx=(0, 8))
         self.run_count_menu = ctk.CTkOptionMenu(opts, values=["2", "3"], width=70)
         self.run_count_menu.set("2")
@@ -286,9 +385,11 @@ class ThermalLabApp(ctk.CTk):
         self.warmup_menu.set("7")
         self.warmup_menu.pack(side="left")
 
-        ctk.CTkButton(form, text="Start session", fg_color=ACCENT, hover_color="#a34b1e", command=self._start_session).grid(
-            row=16, column=0, sticky="w", padx=8, pady=18
-        )
+        actions = ctk.CTkFrame(form, fg_color="transparent")
+        actions.grid(row=19, column=0, columnspan=2, sticky="w", padx=8, pady=18)
+        ctk.CTkButton(actions, text="Start session", fg_color=ACCENT, hover_color="#a34b1e", command=self._start_session).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(actions, text="Rescan this machine", command=self._rescan_into_setup).pack(side="left")
+        self._on_session_kind_change(kind)
 
     def _start_session(self) -> None:
         name = self._fields["name"].get().strip()
@@ -307,6 +408,7 @@ class ThermalLabApp(ctk.CTk):
             sku=self._fields["sku"].get().strip(),
             serial=self._fields["serial"].get().strip(),
             cpu=self._fields["cpu"].get().strip(),
+            cpu_cooler=self._fields["cpu_cooler"].get().strip(),
             gpu=self._fields["gpu"].get().strip(),
             psu=self._fields["psu"].get().strip(),
             ram=self._fields["ram"].get().strip(),
@@ -320,13 +422,132 @@ class ThermalLabApp(ctk.CTk):
         )
         self.settings.last_operator = configuration.operator
         self.store.save_settings(self.settings)
+        kind = "acoustic" if self.session_kind.get() == "Acoustic" else "thermal"
         session = Session.create(
             configuration,
             run_count=int(self.run_count_menu.get()),
             warmup_minutes=int(self.warmup_menu.get()),
+            kind=kind,
         )
         self.store.save_session(session)
         self._open_session(session)
+
+    def _saved_config_choices(self) -> dict[str, Optional[Session]]:
+        choices: dict[str, Optional[Session]] = {"This machine": None}
+        used = {"This machine"}
+        for session in self.store.list_sessions():
+            name = session.configuration.name or session.id
+            kind = "acoustic" if session.kind == "acoustic" else "thermal"
+            when = (session.updated_at or "")[:10]
+            label = f"{name} · {kind} · {when}"
+            if label in used:
+                label = f"{label} · {session.id}"
+            used.add(label)
+            choices[label] = session
+        return choices
+
+    def _on_reuse_config(self, label: str) -> None:
+        session = self._reuse_choices.get(label)
+        if session is None:
+            self._fill_from_machine()
+            return
+        self._fill_from_configuration(session.configuration)
+        if session.kind == "thermal" and self.session_kind.get() == "Thermal":
+            if session.run_count in (2, 3):
+                self.run_count_menu.set(str(session.run_count))
+            if 5 <= session.warmup_minutes <= 10:
+                self.warmup_menu.set(str(session.warmup_minutes))
+
+    def _fill_from_machine(self) -> None:
+        hw = self.hardware
+        self._fill_fields(
+            {
+                "name": "",
+                "operator": self.settings.last_operator,
+                "sku": hw.sku,
+                "serial": hw.serial,
+                "cpu": hw.cpu,
+                "cpu_cooler": "",
+                "gpu": hw.gpu,
+                "psu": hw.psu,
+                "ram": hw.ram,
+                "storage": hw.storage,
+                "fan_type": hw.fan_type,
+                "notes": "",
+                "room": "",
+                "ambient": "",
+            },
+            fan_count=hw.fan_count,
+            parts_swapped=False,
+        )
+
+    def _fill_from_configuration(self, cfg: Configuration) -> None:
+        self._fill_fields(
+            {
+                "name": cfg.name,
+                "operator": cfg.operator,
+                "sku": cfg.sku,
+                "serial": cfg.serial,
+                "cpu": cfg.cpu,
+                "cpu_cooler": cfg.cpu_cooler,
+                "gpu": cfg.gpu,
+                "psu": cfg.psu,
+                "ram": cfg.ram,
+                "storage": cfg.storage,
+                "fan_type": cfg.fan_type,
+                "notes": cfg.notes,
+                "room": _num_text(cfg.room_temp_c),
+                "ambient": _num_text(cfg.ambient_temp_c),
+            },
+            fan_count=cfg.fan_count,
+            parts_swapped=cfg.parts_swapped,
+        )
+
+    def _fill_fields(self, values: dict[str, str], fan_count: Optional[int], parts_swapped: bool) -> None:
+        for key, value in values.items():
+            entry = self._fields[key]
+            entry.delete(0, "end")
+            if value:
+                entry.insert(0, value)
+        if fan_count and 1 <= fan_count <= 12:
+            self.fan_count_menu.set(str(fan_count))
+        else:
+            self.fan_count_menu.set("—")
+        self.swapped_var.set(bool(parts_swapped))
+
+    def _rescan_into_setup(self) -> None:
+        previous = self.hardware
+        self.hardware = scan_hardware()
+        self._replace_scanned_field("sku", previous.sku, self.hardware.sku)
+        self._replace_scanned_field("serial", previous.serial, self.hardware.serial)
+        self._replace_scanned_field("cpu", previous.cpu, self.hardware.cpu)
+        self._replace_scanned_field("gpu", previous.gpu, self.hardware.gpu)
+        self._replace_scanned_field("psu", previous.psu, self.hardware.psu)
+        self._replace_scanned_field("ram", previous.ram, self.hardware.ram)
+        self._replace_scanned_field("storage", previous.storage, self.hardware.storage)
+        self._replace_scanned_field("fan_type", previous.fan_type, self.hardware.fan_type)
+        current_count = self.fan_count_menu.get()
+        previous_count = str(previous.fan_count) if previous.fan_count else "—"
+        if current_count in {"—", previous_count}:
+            if self.hardware.fan_count and 1 <= self.hardware.fan_count <= 12:
+                self.fan_count_menu.set(str(self.hardware.fan_count))
+            else:
+                self.fan_count_menu.set("—")
+
+    def _replace_scanned_field(self, key: str, previous: str, current: str) -> None:
+        entry = self._fields[key]
+        existing = entry.get().strip()
+        if existing and existing != (previous or ""):
+            return
+        entry.delete(0, "end")
+        if current:
+            entry.insert(0, current)
+
+    def _on_session_kind_change(self, value: str) -> None:
+        if value == "Acoustic":
+            self.thermal_opts.grid_remove()
+        else:
+            self.thermal_opts.grid()
 
     def _fan_count_value(self) -> Optional[int]:
         raw = self.fan_count_menu.get().strip()
@@ -345,7 +566,7 @@ class ThermalLabApp(ctk.CTk):
 
     def _open_session(self, session: Session) -> None:
         self.session = session
-        self.steps = build_steps(session.run_count, session.warmup_minutes)
+        self.steps = build_steps(session.run_count, session.warmup_minutes, session.kind)
         if session.current_step_id not in {step.id for step in self.steps}:
             session.current_step_id = self.steps[0].id
         self.show_run()
@@ -356,11 +577,14 @@ class ThermalLabApp(ctk.CTk):
             return
         page = self._page()
         cfg = self.session.configuration
-        self._heading(
-            page,
-            cfg.name,
-            f"{cfg.parts_label()}   ·   {self.session.run_count} runs   ·   warmup {self.session.warmup_minutes} min",
-        )
+        if self.session.kind == "acoustic":
+            subtitle = f"{cfg.parts_label()}   ·   acoustic"
+        else:
+            subtitle = (
+                f"{cfg.parts_label()}   ·   thermal   ·   "
+                f"{self.session.run_count} runs   ·   warmup {self.session.warmup_minutes} min"
+            )
+        self._heading(page, cfg.name, subtitle)
 
         body = ctk.CTkFrame(page, fg_color="transparent")
         body.pack(fill="both", expand=True)
@@ -487,11 +711,11 @@ class ThermalLabApp(ctk.CTk):
             ctk.CTkButton(btns, text="Stop suite", command=self._stop_suite_clicked).pack(side="left", padx=8)
         ctk.CTkButton(btns, text="Reset timer", command=lambda: self._reset_timer(step)).pack(side="left", padx=8)
 
-        if step.kind == "timer_suite" and step.run_index:
+        if step.id == "stressed":
             assert self.session is not None
             extra = ctk.CTkFrame(self.step_panel, fg_color="transparent")
             extra.pack(anchor="w", padx=24, pady=(16, 0))
-            ctk.CTkLabel(extra, text="Stressed dB (optional — record during one thermal run)").pack(anchor="w")
+            ctk.CTkLabel(extra, text="Stressed dB").pack(anchor="w")
             self.stress_db_entry = ctk.CTkEntry(extra, width=160)
             self.stress_db_entry.pack(anchor="w")
             if self.session.acoustic.stressed_db is not None:
@@ -542,7 +766,7 @@ class ThermalLabApp(ctk.CTk):
         btns = ctk.CTkFrame(self.step_panel, fg_color="transparent")
         btns.pack(anchor="w", padx=24, pady=16)
         ctk.CTkButton(btns, text="Compare configs", fg_color=ACCENT, hover_color="#a34b1e", command=self.show_compare).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(btns, text="New session", command=self.show_setup).pack(side="left")
+        ctk.CTkButton(btns, text="New session", command=lambda: self.show_setup("Thermal")).pack(side="left")
 
     def _attach_photo(self, run_index: int, kind: str) -> None:
         assert self.session is not None
@@ -580,11 +804,12 @@ class ThermalLabApp(ctk.CTk):
                 self.session.acoustic.notes = self.idle_notes.get().strip()
             elif step.kind == "timer_suite":
                 self._stop_suite_clicked()
-                if step.run_index and hasattr(self, "stress_db_entry"):
+                if step.id == "stressed":
                     stressed = parse_float(self.stress_db_entry.get())
-                    if stressed is not None:
-                        self.session.acoustic.stressed_db = stressed
-                        self.session.acoustic.stressed_during_run = step.run_index
+                    if stressed is None:
+                        messagebox.showerror("Stressed dB", "Enter the stressed decibel reading.")
+                        return
+                    self.session.acoustic.stressed_db = stressed
             elif step.kind == "timer_cooldown":
                 self._stop_suite_clicked()
             elif step.kind == "capture":
@@ -711,11 +936,16 @@ class ThermalLabApp(ctk.CTk):
             row = ctk.CTkFrame(scroller)
             row.pack(fill="x", pady=6)
             summary = compare_sessions([session]).summaries[0]
-            text = (
-                f"{summary.name}   ·   {session.status}   ·   "
-                f"CPU avg {fmt_num(summary.cpu_avg, '°C')}   GPU avg {fmt_num(summary.gpu_avg, '°C')}   "
-                f"idle {fmt_num(summary.idle_db, 'dB')}"
-            )
+            if session.kind == "acoustic":
+                text = (
+                    f"{summary.name}   ·   acoustic   ·   {session.status}   ·   "
+                    f"idle {fmt_num(summary.idle_db, 'dB')}   stressed {fmt_num(summary.stressed_db, 'dB')}"
+                )
+            else:
+                text = (
+                    f"{summary.name}   ·   thermal   ·   {session.status}   ·   "
+                    f"CPU avg {fmt_num(summary.cpu_avg, '°C')}   GPU avg {fmt_num(summary.gpu_avg, '°C')}"
+                )
             ctk.CTkLabel(row, text=text, anchor="w").pack(side="left", padx=12, pady=10, fill="x", expand=True)
             ctk.CTkButton(row, text="Open", width=80, command=lambda s=session: self._open_session(s)).pack(side="right", padx=8)
 
@@ -724,7 +954,11 @@ class ThermalLabApp(ctk.CTk):
     def show_compare(self) -> None:
         self._stop_timer()
         page = self._page()
-        self._heading(page, "Compare configurations", "Select 2 or more sessions. Deltas are versus the first selected.")
+        self._heading(
+            page,
+            "Compare configurations",
+            "Select 2 or more sessions of the same type. Deltas are versus the first selected.",
+        )
 
         sessions = self.store.list_sessions()
         if len(sessions) < 2:
@@ -736,7 +970,11 @@ class ThermalLabApp(ctk.CTk):
         self._compare_vars = {}
         for session in sessions:
             var = ctk.BooleanVar(value=False)
-            label = f"{session.configuration.name}  ({session.configuration.parts_label()})  ·  {session.updated_at[:10]}"
+            kind_label = "acoustic" if session.kind == "acoustic" else "thermal"
+            label = (
+                f"{session.configuration.name}  ({kind_label})  "
+                f"({session.configuration.parts_label()})  ·  {session.updated_at[:10]}"
+            )
             ctk.CTkCheckBox(picker, text=label, variable=var).pack(anchor="w", pady=3)
             self._compare_vars[session.id] = var
 
@@ -752,6 +990,14 @@ class ThermalLabApp(ctk.CTk):
         sessions.sort(key=lambda s: chosen_ids.index(s.id))
         if len(sessions) < 2:
             ctk.CTkLabel(self.compare_host, text="Select at least two configurations.", text_color=MUTED).pack(anchor="w")
+            return
+        kinds = {session.kind for session in sessions}
+        if len(kinds) > 1:
+            ctk.CTkLabel(
+                self.compare_host,
+                text="Compare thermal sessions with thermal sessions, and acoustic sessions with acoustic sessions.",
+                text_color="#e0b35d",
+            ).pack(anchor="w")
             return
         result = compare_sessions(sessions)
         self._draw_compare(self.compare_host, result)

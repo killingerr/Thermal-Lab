@@ -91,20 +91,34 @@ def compare_sessions(sessions: list[Session]) -> CompareResult:
     summaries = [summarize(session) for session in sessions]
     max_runs = max((s.run_count for s in summaries), default=0)
 
+    kinds = {session.kind for session in sessions}
+    acoustic = kinds == {"acoustic"}
+    thermal = kinds == {"thermal"}
+
     metric_rows: list[tuple[str, str, list[Optional[float]]]] = []
-    for i in range(max_runs):
-        metric_rows.append(
-            (f"CPU tap run {i + 1}", "°C", [s.cpu_taps[i] if i < len(s.cpu_taps) else None for s in summaries])
+    if not acoustic:
+        for i in range(max_runs):
+            metric_rows.append(
+                (f"CPU tap run {i + 1}", "°C", [s.cpu_taps[i] if i < len(s.cpu_taps) else None for s in summaries])
+            )
+            metric_rows.append(
+                (f"GPU tap run {i + 1}", "°C", [s.gpu_taps[i] if i < len(s.gpu_taps) else None for s in summaries])
+            )
+        metric_rows.extend(
+            [
+                ("CPU tap average", "°C", [s.cpu_avg for s in summaries]),
+                ("GPU tap average", "°C", [s.gpu_avg for s in summaries]),
+            ]
         )
-        metric_rows.append(
-            (f"GPU tap run {i + 1}", "°C", [s.gpu_taps[i] if i < len(s.gpu_taps) else None for s in summaries])
+    if not thermal:
+        metric_rows.extend(
+            [
+                ("Idle dB", "dB", [s.idle_db for s in summaries]),
+                ("Stressed dB", "dB", [s.stressed_db for s in summaries]),
+            ]
         )
     metric_rows.extend(
         [
-            ("CPU tap average", "°C", [s.cpu_avg for s in summaries]),
-            ("GPU tap average", "°C", [s.gpu_avg for s in summaries]),
-            ("Idle dB", "dB", [s.idle_db for s in summaries]),
-            ("Stressed dB", "dB", [s.stressed_db for s in summaries]),
             ("Room temp", "°C", [s.room_temp_c for s in summaries]),
             ("Ambient temp", "°C", [s.ambient_temp_c for s in summaries]),
         ]

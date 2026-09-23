@@ -17,14 +17,14 @@ class Step:
     run_index: Optional[int] = None
 
 
-def build_steps(run_count: int, warmup_minutes: int) -> list[Step]:
-    run_count = 3 if run_count >= 3 else 2
-    warmup_minutes = min(10, max(5, int(warmup_minutes)))
-    warmup_s = warmup_minutes * 60
-    cool_s = 3 * 60
-    run_s = 10 * 60
+def build_steps(run_count: int, warmup_minutes: int, kind: str = "thermal") -> list[Step]:
+    if kind == "acoustic":
+        return _acoustic_steps()
+    return _thermal_steps(run_count, warmup_minutes)
 
-    steps = [
+
+def _acoustic_steps() -> list[Step]:
+    return [
         Step(
             id="acoustic_setup",
             title="Acoustic setup",
@@ -40,6 +40,34 @@ def build_steps(run_count: int, warmup_minutes: int) -> list[Step]:
             detail="Record idle dB before any stress starts.",
             kind="field",
         ),
+        Step(
+            id="stressed",
+            title="Stressed decibels",
+            detail=(
+                "Start s76-stress-tests.sh -l and record dB while the system is "
+                "stressed. Complete this step once you have the reading. The "
+                "timer stops the suite after 10 minutes if it is still running."
+            ),
+            kind="timer_suite",
+            duration_seconds=10 * 60,
+        ),
+        Step(
+            id="done",
+            title="Session complete",
+            detail="This acoustic session is ready to compare with other acoustic sessions.",
+            kind="done",
+        ),
+    ]
+
+
+def _thermal_steps(run_count: int, warmup_minutes: int) -> list[Step]:
+    run_count = 3 if run_count >= 3 else 2
+    warmup_minutes = min(10, max(5, int(warmup_minutes)))
+    warmup_s = warmup_minutes * 60
+    cool_s = 3 * 60
+    run_s = 10 * 60
+
+    steps = [
         Step(
             id="warmup",
             title="Warm-up",
@@ -73,7 +101,7 @@ def build_steps(run_count: int, warmup_minutes: int) -> list[Step]:
                     detail=(
                         "Start test 1: s76-stress-tests.sh -l for 10 minutes. "
                         "Photograph the CPU and GPU tabs on test_gui when the run "
-                        "finishes. You can record stressed dB during this run."
+                        "finishes."
                     ),
                     kind="timer_suite",
                     duration_seconds=run_s,
@@ -97,7 +125,7 @@ def build_steps(run_count: int, warmup_minutes: int) -> list[Step]:
             id="done",
             title="Session complete",
             detail=(
-                "This configuration is ready to compare. If parts were swapped, "
+                "This thermal session is ready to compare. If parts were swapped, "
                 "start a new session for the new combo."
             ),
             kind="done",
