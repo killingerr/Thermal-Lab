@@ -1,0 +1,19 @@
+[project]
+name = "thermal-lab"
+version = "0.1.0"
+description = "Guided thermal/acoustic testing and hardware configuration compare"
+requires-python = ">=3.10"
+dependencies = [
+    "customtkinter>=5.2.2",
+    "pillow>=10.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+thermal-lab = "thermal_lab.app:main"
