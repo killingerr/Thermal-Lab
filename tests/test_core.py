@@ -21,7 +21,7 @@ from thermal_lab.scan import (
 )
 from thermal_lab.protocol import build_steps, next_step
 from thermal_lab.store import Store
-from thermal_lab.suite import SuiteError, SuiteRunner, suite_script_path
+from thermal_lab.suite import SuiteError, SuiteRunner, find_suite_script, suite_script_path
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -163,6 +163,18 @@ class SuiteTests(unittest.TestCase):
             runner = SuiteRunner()
             self.assertFalse(runner.is_running())
             runner.validate(tmp)
+
+    def test_finds_checkout_inside_a_garbled_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp) / "stress-scripts"
+            checkout.mkdir()
+            script = checkout / "s76-stress-tests.sh"
+            script.write_text("#!/bin/bash\n", encoding="utf-8")
+            garbled = (
+                "/home/system76/Thermal-Lab/Not in a git repository.\n"
+                f"{checkout}"
+            )
+            self.assertEqual(find_suite_script(garbled, extra_dirs=[]), script.resolve())
 
 
 if __name__ == "__main__":

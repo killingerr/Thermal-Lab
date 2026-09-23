@@ -18,16 +18,16 @@ Sessions are saved under `~/.local/share/thermal-lab/` so you can resume after a
 
 - Linux with Python 3.10+
 - System Tk (`sudo apt install python3-tk`) — required by the desktop UI
-- A local clone of [stress-scripts](https://git.karner.dev/jacobvktm/stress-scripts)
-- The suite’s own dependencies (`s76-stress-tests.sh` starts test_gui, stress-ng, and on NVIDIA gpu_burn)
+- The stress suite’s own dependencies (`s76-stress-tests.sh` starts test_gui, stress-ng, and on NVIDIA gpu_burn)
 
 ## Run
 
 ```bash
+./install.sh
 ./run.sh
 ```
 
-On first launch, set **stress-scripts checkout** on the Home screen to the clone directory (the folder that contains `s76-stress-tests.sh`).
+`install.sh` clones Thermal Lab if needed, installs missing packages, and downloads the stress test tools. The app uses those tools when a test starts. There is no folder to configure.
 
 The app starts `s76-stress-tests.sh -l` for warmup and each thermal run, then stops the process tree when the timer ends. The suite itself wants to run for hours; the timer is what ends a 10-minute pass.
 

@@ -33,7 +33,7 @@ install_missing_packages() {
 }
 
 script_dir() {
-  cd "$(dirname "$0")" && pwd
+  (unset CDPATH; builtin cd -- "$(dirname -- "$0")" && pwd)
 }
 
 is_thermal_lab() {
@@ -41,21 +41,21 @@ is_thermal_lab() {
 }
 
 ensure_thermal_lab() {
-  local here
+  local here dest
   here="$(script_dir)"
   if is_thermal_lab "$here"; then
-    printf '%s\n' "$here"
+    THERMAL_LAB_ROOT="$here"
     return
   fi
-  local dest="${THERMAL_LAB_DIR:-${HOME}/Thermal-Lab}"
+  dest="${THERMAL_LAB_DIR:-${HOME}/Thermal-Lab}"
   if is_thermal_lab "$dest"; then
     info "Thermal Lab already present at ${dest}"
   else
     command -v git >/dev/null 2>&1 || install_missing_packages git
     info "Cloning Thermal Lab into ${dest}"
-    git clone "$THERMAL_LAB_URL" "$dest"
+    git clone "$THERMAL_LAB_URL" "$dest" >&2
   fi
-  printf '%s\n' "$dest"
+  THERMAL_LAB_ROOT="$dest"
 }
 
 settings_stress_path() {
@@ -84,23 +84,23 @@ ensure_stress_scripts() {
   for candidate in "${candidates[@]}"; do
     if [[ -f "${candidate}/s76-stress-tests.sh" ]]; then
       info "stress-scripts already present at ${candidate}"
-      printf '%s\n' "$candidate"
+      STRESS_ROOT="$candidate"
       return
     fi
   done
   local dest="${STRESS_SCRIPTS_DIR:-${HOME}/stress-scripts}"
   command -v git >/dev/null 2>&1 || install_missing_packages git
   info "Cloning stress-scripts into ${dest}"
-  if ! git clone --recurse-submodules "$STRESS_SCRIPTS_URL" "$dest"; then
+  if ! git clone --recurse-submodules "$STRESS_SCRIPTS_URL" "$dest" >&2; then
     info "Submodules were not cloned. Cloning the stress-scripts tree without them."
     rm -rf "$dest"
-    git clone "$STRESS_SCRIPTS_URL" "$dest"
+    git clone "$STRESS_SCRIPTS_URL" "$dest" >&2
   fi
   if command -v git-lfs >/dev/null 2>&1 || have_pkg git-lfs; then
     git -C "$dest" lfs install --local >/dev/null 2>&1 || true
-    git -C "$dest" lfs pull || true
+    git -C "$dest" lfs pull >&2 || true
   fi
-  printf '%s\n' "$dest"
+  STRESS_ROOT="$dest"
 }
 
 ensure_venv() {
@@ -123,7 +123,7 @@ remember_stress_path() {
 import json, sys
 from pathlib import Path
 path = Path(sys.argv[1])
-stress = sys.argv[2]
+stress = sys.argv[2].strip()
 path.parent.mkdir(parents=True, exist_ok=True)
 data = {}
 if path.is_file():
@@ -131,23 +131,27 @@ if path.is_file():
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         data = {}
-if not data.get("stress_scripts_path"):
+existing = data.get("stress_scripts_path") or ""
+existing_ok = Path(existing).expanduser().joinpath("s76-stress-tests.sh").is_file()
+if not existing_ok:
     data["stress_scripts_path"] = stress
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"Saved stress-scripts path to {path}")
+    print(f"Saved stress-scripts path to {path}", file=sys.stderr)
 else:
-    print(f"Keeping existing stress-scripts path: {data['stress_scripts_path']}")
+    print(f"Keeping existing stress-scripts path: {existing}", file=sys.stderr)
 PY
 }
 
 install_missing_packages git python3 python3-venv python3-pip python3-tk git-lfs
 
-ROOT="$(ensure_thermal_lab)"
-STRESS="$(ensure_stress_scripts)"
-ensure_venv "$ROOT"
-remember_stress_path "$STRESS"
+THERMAL_LAB_ROOT=""
+STRESS_ROOT=""
+ensure_thermal_lab
+ensure_stress_scripts
+ensure_venv "$THERMAL_LAB_ROOT"
+remember_stress_path "$STRESS_ROOT"
 
 info "Ready."
-info "  Thermal Lab: ${ROOT}"
-info "  stress-scripts: ${STRESS}"
-info "Start the app with: ${ROOT}/run.sh"
+info "  Thermal Lab: ${THERMAL_LAB_ROOT}"
+info "  stress-scripts: ${STRESS_ROOT}"
+info "Start the app with: ${THERMAL_LAB_ROOT}/run.sh"

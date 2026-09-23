@@ -12,7 +12,7 @@ from thermal_lab.models import Configuration, Session, utc_now
 from thermal_lab.protocol import Step, build_steps, next_step, step_index
 from thermal_lab.scan import scan_hardware
 from thermal_lab.store import Store
-from thermal_lab.suite import SuiteError, SuiteRunner, suite_script_path
+from thermal_lab.suite import SuiteError, SuiteRunner, ensure_suite_script, find_suite_script
 
 
 ACCENT = "#c45c26"
@@ -73,6 +73,7 @@ class ThermalLabApp(ctk.CTk):
 
         self.store = Store()
         self.settings = self.store.load_settings()
+        self._repair_suite_path()
         self.suite = SuiteRunner(log_path=self.store.suite_log_path())
         self.session: Optional[Session] = None
         self.steps: list[Step] = []
@@ -157,18 +158,19 @@ class ThermalLabApp(ctk.CTk):
         else:
             ctk.CTkLabel(parent, text="").pack(pady=8)
 
-    def _refresh_suite_status(self) -> None:
-        path = self.settings.stress_scripts_path
+    def _repair_suite_path(self) -> None:
         try:
-            if path:
-                suite_script_path(path)
-                loc = Path(path).name
-            else:
-                loc = "path not set"
+            script = find_suite_script(self.settings.stress_scripts_path)
         except SuiteError:
-            loc = "invalid path"
+            return
+        cleaned = str(script.parent)
+        if cleaned != self.settings.stress_scripts_path:
+            self.settings.stress_scripts_path = cleaned
+            self.store.save_settings(self.settings)
+
+    def _refresh_suite_status(self) -> None:
         state = "running" if self.suite.is_running() else "stopped"
-        self.suite_status.configure(text=f"Suite: {state}\n{loc}")
+        self.suite_status.configure(text=f"Suite: {state}")
 
     # --- Home / settings -------------------------------------------------
 
@@ -203,25 +205,6 @@ class ThermalLabApp(ctk.CTk):
             ).pack(side="left", padx=8)
         ctk.CTkButton(actions, text="Compare configs", width=160, command=self.show_compare).pack(side="left", padx=8)
 
-        box = ctk.CTkFrame(page)
-        box.pack(fill="x", pady=(8, 0))
-        ctk.CTkLabel(box, text="stress-scripts checkout", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=16, pady=(14, 4))
-        ctk.CTkLabel(
-            box,
-            text="Path to the local clone of git.karner.dev/jacobvktm/stress-scripts. Required to start a run.",
-            text_color=MUTED,
-            wraplength=800,
-            justify="left",
-        ).pack(anchor="w", padx=16)
-
-        row = ctk.CTkFrame(box, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=(8, 16))
-        self.path_entry = ctk.CTkEntry(row, placeholder_text="/path/to/stress-scripts")
-        self.path_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        if self.settings.stress_scripts_path:
-            self.path_entry.insert(0, self.settings.stress_scripts_path)
-        ctk.CTkButton(row, text="Browse", width=90, command=self._browse_suite).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(row, text="Save path", width=100, command=self._save_suite_path).pack(side="left")
         self._hardware_panel(page)
         self._refresh_suite_status()
 
@@ -261,28 +244,13 @@ class ThermalLabApp(ctk.CTk):
         self.hardware = scan_hardware()
         self.show_home()
 
-    def _browse_suite(self) -> None:
-        chosen = filedialog.askdirectory(title="Select stress-scripts checkout")
-        if not chosen:
-            return
-        self.path_entry.delete(0, "end")
-        self.path_entry.insert(0, chosen)
-        self._save_suite_path()
-
-    def _save_suite_path(self) -> None:
-        path = self.path_entry.get().strip()
-        if not path:
-            messagebox.showerror("stress-scripts", "Choose the checkout directory.")
-            return
-        try:
-            suite_script_path(path)
-        except SuiteError as exc:
-            messagebox.showerror("stress-scripts", str(exc))
-            return
-        self.settings.stress_scripts_path = path
-        self.store.save_settings(self.settings)
-        self._refresh_suite_status()
-        messagebox.showinfo("stress-scripts", "Path saved. Ready to launch s76-stress-tests.sh -l.")
+    def _suite_checkout(self) -> str:
+        script = ensure_suite_script(self.settings.stress_scripts_path)
+        cleaned = str(script.parent)
+        if cleaned != self.settings.stress_scripts_path:
+            self.settings.stress_scripts_path = cleaned
+            self.store.save_settings(self.settings)
+        return cleaned
 
     # --- Setup -----------------------------------------------------------
 
@@ -849,7 +817,10 @@ class ThermalLabApp(ctk.CTk):
     def _start_timer(self, step: Step) -> None:
         if step.kind == "timer_suite":
             try:
-                self.suite.start(self.settings.stress_scripts_path)
+                self.suite_status.configure(text="Suite: preparing")
+                self.update_idletasks()
+                checkout = self._suite_checkout()
+                self.suite.start(checkout)
             except SuiteError as exc:
                 messagebox.showerror("stress-scripts", str(exc))
                 return

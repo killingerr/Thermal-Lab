@@ -10,6 +10,8 @@ from typing import Optional
 
 SUITE_SCRIPT = "s76-stress-tests.sh"
 SUITE_ARGS = ["-l"]
+SUITE_URL = "https://git.karner.dev/jacobvktm/stress-scripts.git"
+_MISSING = "Could not download the stress test tools. Check the network connection and start the test again."
 
 # Patterns that belong to this suite. Narrow on purpose so we do not
 # kill unrelated desktop processes.
@@ -40,13 +42,70 @@ class SuiteError(Exception):
 
 
 def suite_script_path(repo: str | Path) -> Path:
-    path = Path(repo).expanduser().resolve()
+    path = Path(repo).expanduser()
+    try:
+        path = path.resolve()
+    except OSError as exc:
+        raise SuiteError(f"stress-scripts path is not usable: {repo}") from exc
     script = path / SUITE_SCRIPT
     if not path.is_dir() or not script.is_file():
-        raise SuiteError(
-            f"stress-scripts checkout not found. Expected {SUITE_SCRIPT} under {path}"
-        )
+        raise SuiteError(_MISSING)
     return script
+
+
+def find_suite_script(raw: str = "", extra_dirs: Optional[list[Path]] = None) -> Path:
+    """Find s76-stress-tests.sh even if the saved path has extra text in it."""
+    candidates: list[str] = []
+    text = raw or ""
+    if text.strip():
+        candidates.append(text.strip())
+        candidates.extend(line.strip() for line in text.splitlines())
+        for token in text.replace("\n", " ").split():
+            token = token.strip().strip(".,;")
+            if token.startswith("/") or token.startswith("~"):
+                candidates.append(token)
+    if extra_dirs is None:
+        home = Path.home()
+        extra_dirs = [home / "stress-scripts", home / "src" / "stress-scripts"]
+    candidates.extend(str(path) for path in extra_dirs)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        path = Path(candidate).expanduser()
+        script = path / SUITE_SCRIPT
+        if script.is_file():
+            return script.resolve()
+    raise SuiteError(_MISSING)
+
+
+def default_suite_dir() -> Path:
+    return Path.home() / "stress-scripts"
+
+
+def ensure_suite_script(raw: str = "", extra_dirs: Optional[list[Path]] = None) -> Path:
+    """Use an existing stress-scripts checkout, or clone one into ~/stress-scripts."""
+    try:
+        return find_suite_script(raw, extra_dirs=extra_dirs)
+    except SuiteError:
+        dest = default_suite_dir()
+        script = dest / SUITE_SCRIPT
+        if script.is_file():
+            return script.resolve()
+        if dest.exists():
+            raise SuiteError(_MISSING)
+        try:
+            subprocess.run(
+                ["git", "clone", "--recurse-submodules", SUITE_URL, str(dest)],
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise SuiteError(_MISSING) from exc
+        if not script.is_file():
+            raise SuiteError(_MISSING)
+        return script.resolve()
 
 
 class SuiteRunner:
